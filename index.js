@@ -1,7 +1,7 @@
 const express = require('express');
 const app = express();
 const port = process.env.PORT || 5000;
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId} = require('mongodb');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const saltRounds = 10;
@@ -39,7 +39,7 @@ app.post('/register', async (req, res) => {
     "name": req.body.name,
     "username": req.body.username,
     "password": hash,
-    "role": req.body.role // Add role here
+    "role": req.body.role // Add role 
   });
   res.send('Register Success: ' + req.body.username);
 });
@@ -74,13 +74,17 @@ app.post('/admin/login', async (req, res) => {
   }
 });
 
-app.get('/admin/users', async (req, res) => {
-   const users = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").find().toArray();
-   res.json(users);
+app.get('/admin/users', verifyToken, checkRole('admin'), async (req, res) => {
+  try {
+    const users = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").find({ role: { $in: ['driver', 'passenger'] } }).toArray();
+    res.json(users);
+  } catch (error) {
+    res.status(500).send('Error fetching users');
+  }
 });
 
 // Admin route to view all rides
-app.get('/admin/rides', async (req, res) => {
+app.get('/admin/rides', verifyToken, checkRole('admin') , async (req, res) => {
   try {
     const rides = await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").find().toArray();
     res.json(rides);
@@ -89,24 +93,83 @@ app.get('/admin/rides', async (req, res) => {
   }
 });
 
-app.put('/admin/users/:id', async (req, res) => {
-   const userId = req.params.id;
-   const updatedUser = {
-      name: req.body.name,
-      username: req.body.username,
-      role: req.body.role
-   };
-   await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").updateOne({ _id: new MongoClient.ObjectID(userId) }, { $set: updatedUser });
-   res.send('User updated');
+app.put('/admin/users', verifyToken, checkRole('admin'), async (req, res) => {
+  const { username, updatedUser } = req.body;
+
+  if (!username || !updatedUser) {
+    return res.status(400).send('Username and updated user details are required');
+  }
+
+  try {
+    const result = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").updateOne(
+      { username: username },
+      { $set: updatedUser }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send('User not found');
+    }
+
+    res.send('User updated');
+  } catch (error) {
+    res.status(500).send('Error updating user');
+  }
 });
 
-app.delete('/admin/users/:id', async (req, res) => {
-   const userId = req.params.id;
-   await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").deleteOne({ _id: new MongoClient.ObjectID(userId) });
-   res.send('User deleted');
+app.delete('/admin/users/:id', verifyToken, checkRole('admin'), async (req, res) => {
+  const userId = req.params.id;
+
+  try {
+    const result = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").deleteOne({ _id: new ObjectId(userId) });
+
+    if (result.deletedCount === 1) {
+      res.send('User deleted successfully');
+    } else {
+      res.status(404).send('User not found');
+    }
+  } catch (error) {
+    res.status(500).send('Error deleting user');
+  }
 });
 
 // Driver routes
+// Register a driver and their car
+app.post('/driver/register/car' , async (req, res) => {
+  try {
+    const existingUser = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").findOne(
+      { username: req.body.username }
+    );
+
+    if (existingUser) {
+      return res.status(400).send('Driver username already exists');
+    }
+
+    const hash = bcrypt.hashSync(req.body.password, saltRounds);
+    const newDriver = {
+      name: req.body.name,
+      username: req.body.username,
+      password: hash,
+      role: 'driver',
+    };
+
+    const result = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").insertOne(newDriver);
+
+    const newCar = {
+      driverId: result.insertedId,
+      licensePlate: req.body.car.licensePlate,
+      color: req.body.car.color,
+      model: req.body.car.model,
+    };
+
+    await client.db("ProjectAssignmentTaxiDatabase").collection("Cars").insertOne(newCar);
+
+    res.status(201).send('Driver and car registered successfully');
+  } catch (error) {
+    console.error(error);
+    res.status(500).send('Error registering driver and car');
+  }
+});
+
 app.get('/driver/login', async (req, res) => {
   try {
   const user = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").findOne(
@@ -124,9 +187,9 @@ app.get('/driver/login', async (req, res) => {
     var token = jwt.sign({
       userId: user._id,
       role: user.role
-    }, 'inipasswordaku', { expiresIn: 60 });
+    }, 'inipasswordaku', { expiresIn: '1h' });
 
-    res.send({ token : token});
+    res.send({ token : token, driverId: user._id});
   } else {
     res.send('Login failed');
   }
@@ -136,48 +199,90 @@ app.get('/driver/login', async (req, res) => {
 });
 
 app.get('/driver/passengers', verifyToken, checkRole('driver'), async (req, res) => {
-  const passengers = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").find({ role: 'passenger' }).toArray();
-  res.json(passengers);
-});
-
-app.put('/driver/profile', checkRole('driver'), async (req, res) => {
-  const updatedUser = {
-    name: req.body.name,
-    username: req.body.username,
-    password: bcrypt.hashSync(req.body.password, saltRounds)
-  };
-  await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").updateOne({ _id: new MongoClient.ObjectID(req.user.userId) }, { $set: updatedUser });
-  res.send('Profile updated');
-});
-
-app.delete('/driver/account', checkRole('driver'), async (req, res) => {
-  await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").deleteOne({ _id: new MongoClient.ObjectID(req.user.userId) });
-  res.send('Account deleted');
-});
-
-app.get('/driver/pending-rides', checkRole('driver'), async (req, res) => {
   try {
-    const pendingRides = await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").find({ status: 'pending' }).toArray();
-    res.json(pendingRides);
+    const passengers = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").find({ role: 'passenger' },{ projection: { name: 1 } }).toArray();
+    res.json(passengers);
   } catch (error) {
-    res.status(500).send('Error fetching pending rides');
+    res.status(500).send('Error fetching passengers');
   }
 });
 
-app.post('/driver/accept-ride/:rideId', verifyToken, checkRole('driver'), async (req, res) => {
+app.put('/driver/profile', verifyToken, checkRole('driver'), async (req, res) => {
+  const driverId = req.user.userId;
+  const updatedUser = {
+    username: req.body.username,
+    password: bcrypt.hashSync(req.body.password, saltRounds)
+  };
+
+  const user = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").findOne({ _id: new ObjectId(driverId) });
+
+  if (!user) {
+    return res.status(404).send('User not found');
+  }
+
+  await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").updateOne({ _id: new ObjectId(driverId) }, { $set: updatedUser });
+  res.send('Profile updated');
+});
+
+app.delete('/driver/account', verifyToken, checkRole('driver'), async (req, res) => {
   try {
-    const ride = await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").findOne({ _id: new ObjectId(req.params.rideId) });
-    if (ride && ride.status === 'requested') {
-      await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").updateOne(
-        { _id: new ObjectId(req.params.rideId) },
-        { $set: { status: 'accepted', driverId: req.user.userId } }
-      );
-      res.send('Ride accepted');
+    const { username, password } = req.body;
+
+    // Step 1: Retrieve the user document by username
+    const user = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").findOne({ username });
+
+    if (!user) {
+      console.log('Account not found for username: ' + username);
+      return res.status(404).json({ message: 'Account not found.' });
+    }
+
+    // Step 2: Verify the provided password matches the stored password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      console.log('Invalid password for username: ' + username);
+      return res.status(401).json({ message: 'Invalid password.' });
+    }
+
+    // Step 3: Proceed to delete the user account
+    const result = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").deleteOne({ username });
+
+    if (result.deletedCount === 1) {
+      console.log('Account : ' + username + ' deleted');
+      res.status(200).json({ message: 'Account deleted successfully.' });
     } else {
-      res.send('Ride not available for acceptance');
+      console.log('Failed to delete account for username: ' + username);
+      res.status(500).json({ message: 'Failed to delete account.' });
     }
   } catch (error) {
-    res.status(500).send('Error accepting ride');
+    console.error('Error deleting account:', error);
+    res.status(500).json({ message: 'Internal server error.' });
+  }
+});
+
+app.post('/driver/accept-ride', verifyToken, checkRole('driver'), async (req, res) => {
+  try {
+    const { rideId } = req.body; // Get rideId from the request body
+    const driverId = req.user.userId; // Driver's userId from the token
+
+    // Validate if rideId is provided
+    if (!rideId) {
+      return res.status(400).send('Ride ID is required');
+    }
+
+    // Check if the ride exists and is in "requested" status with no driver assigned
+    const ride = await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").findOne({ _id: new ObjectId(rideId), status: 'requested', driverId: null });
+
+    if (ride) {
+      // Update the ride to "accepted" and assign the driver's ID
+      await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").updateOne({ _id: new ObjectId(rideId) }, {$set: { status: 'accepted',driverId: new ObjectId(driverId) }});
+
+      res.send('Ride accepted');
+    } else {
+      res.send('Ride not available for acceptance or already taken');
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).send('Server error');
   }
 });
 
@@ -227,45 +332,76 @@ app.post('/passenger/request-ride', verifyToken, checkRole('passenger'), async (
   }
 });
 
-app.get('/passenger/driver-info/:rideId', verifyToken, checkRole('passenger'), async (req, res) => {
+app.post('/passenger/ride-details', verifyToken, checkRole('passenger'), async (req, res) => {
   try {
-    const ride = await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").findOne({ _id: new ObjectId(req.params.rideId) });
-    if (ride && ride.driverId) {
-      const driver = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").findOne({ _id: new ObjectId(ride.driverId) });
-      res.json(driver);
-    } else {
-      res.send('No driver assigned yet');
-    }
-  } catch (error) {
-    res.status(500).send('Error fetching driver info');
-  }
-});
+    const { rideId } = req.body;
 
-app.post('/passenger/accept-ride/:rideId',verifyToken, checkRole('passenger'), async (req, res) => {
-  try {
-    const ride = await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").findOne({ _id: new ObjectId(req.params.rideId) });
-    if (ride && ride.status === 'requested') {
-      await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").updateOne({ _id: new ObjectId(req.params.rideId) }, { $set: { status: 'accepted' } });
-      res.send('Ride accepted');
-    } else {
-      res.send('Ride not available for acceptance');
+    // Fetch the ride details for the given rideId and passengerId
+    const ride = await client.db("ProjectAssignmentTaxiDatabase").collection("Rides").findOne({ _id: new ObjectId(rideId) });
+
+    if (!ride) {
+      return res.status(404).json({ error: 'Ride not found or not assigned to this passenger' });
     }
+
+    // Fetch the driver's car details using the driverId from the ride
+    if (ride.driverId) {
+      const car = await client.db("ProjectAssignmentTaxiDatabase").collection("Cars").findOne({ driverId: new ObjectId(ride.driverId) });
+          // Check if car details were found
+    if (!car) {
+      return res.status(404).json({ error: 'Car details not found for the assigned driver' });
+    }
+    else res.status(200).json({
+      rideId: ride._id,
+      status: ride.status,
+      driverId: ride.driverId,
+      car: {
+        licensePlate: car.licensePlate,
+        color: car.color,
+        model: car.model
+      }
+    });
+  }
+    // Respond with ride details including the car informati
   } catch (error) {
-    res.status(500).send('Error accepting ride');
+    console.error('Error fetching ride details:', error);
+    return res.status(500).json({ error: 'Server error' });
   }
 });
 
 app.delete('/passenger/account', verifyToken, checkRole('passenger'), async (req, res) => {
   try {
-    await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").deleteOne({ _id: new ObjectId(req.user.userId) });
-    res.send('Account deleted');
-  } catch (error) {
-    res.status(500).send('Error deleting account');
-  }
-});
+    const { username, password } = req.body;
 
-app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+    // Step 1: Retrieve the user document by username
+    const user = await client
+      .db("ProjectAssignmentTaxiDatabase").collection("Coding").findOne({ username });
+
+    if (!user) {
+      console.log('Account not found for username: ' + username);
+      return res.status(404).json({ message: 'Account not found.' });
+    }
+
+    // Step 2: Verify the provided password matches the stored password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      console.log('Invalid password for username: ' + username);
+      return res.status(401).json({ message: 'Invalid password.' });
+    }
+
+    // Step 3: Proceed to delete the user account
+    const result = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").deleteOne({ username });
+
+    if (result.deletedCount === 1) {
+      console.log('Account : ' + username + ' deleted');
+      res.status(200).json({ message: 'Account deleted successfully.' });
+    } else {
+      console.log('Failed to delete account for username: ' + username);
+      res.status(500).json({ message: 'Failed to delete account.' });
+    }
+  } catch (error) {
+    console.error('Error deleting account:', error);
+    res.status(500).json({ message: 'Internal server error.' });
+  }
 });
 
 async function run() {
@@ -303,3 +439,7 @@ function checkRole(role) {
     next();
   };
 }
+
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
+});
