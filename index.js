@@ -116,11 +116,11 @@ app.put('/admin/users', verifyToken, checkRole('admin'), async (req, res) => {
   }
 });
 
-app.delete('/admin/users/:id', verifyToken, checkRole('admin'), async (req, res) => {
-  const userId = req.params.id;
+app.delete('/admin/users', verifyToken, checkRole('admin'), async (req, res) => {
+  const { username } = req.body;
 
   try {
-    const result = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").deleteOne({ _id: new ObjectId(userId) });
+    const result = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").deleteOne({ username: username });
 
     if (result.deletedCount === 1) {
       res.send('User deleted successfully');
@@ -131,6 +131,7 @@ app.delete('/admin/users/:id', verifyToken, checkRole('admin'), async (req, res)
     res.status(500).send('Error deleting user');
   }
 });
+
 
 // Driver routes
 // Register a driver and their car
@@ -373,8 +374,7 @@ app.delete('/passenger/account', verifyToken, checkRole('passenger'), async (req
     const { username, password } = req.body;
 
     // Step 1: Retrieve the user document by username
-    const user = await client
-      .db("ProjectAssignmentTaxiDatabase").collection("Coding").findOne({ username });
+    const user = await client.db("ProjectAssignmentTaxiDatabase").collection("Coding").findOne({ username });
 
     if (!user) {
       console.log('Account not found for username: ' + username);
